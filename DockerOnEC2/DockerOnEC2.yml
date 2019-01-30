@@ -1,0 +1,159 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  projectName:
+    Type: String
+    Default: 'test'
+  EC2KeyPair:
+    Type: AWS::EC2::KeyPair::KeyName
+Resources:
+  vpc:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-vpc
+  internetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-igw
+  igwAttachVpc:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      InternetGatewayId: !Ref internetGateway
+      VpcId: !Ref vpc
+  publicSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref vpc
+      AvailabilityZone: 'ap-northeast-1a'
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: 'true'
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-public-subnet01
+  publicSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref vpc
+      AvailabilityZone: 'ap-northeast-1c'
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: 'true'
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-public-subnet02
+  publicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-public-rtb
+  routeAddInternet:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref internetGateway
+      RouteTableId: !Ref publicRouteTable
+  associatePublicSubnet1ToPublicRouteTable:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref publicRouteTable
+      SubnetId: !Ref publicSubnet1
+  associatePublicSubnet2ToPublicRouteTable:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref publicRouteTable
+      SubnetId: !Ref publicSubnet2
+  ec2Securitygroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${projectName}-ec2-sg
+      GroupDescription: !Sub ${projectName}-ec2-sg
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-ec2-sg
+      VpcId: !Ref vpc
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        SourceSecurityGroupId: !Ref albSecuritygroup
+  albSecuritygroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${projectName}-alb-sg
+      GroupDescription: !Sub ${projectName}-alb-sg
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-alb-sg
+      VpcId: !Ref vpc
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: '0.0.0.0/0'
+  frontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${projectName}-frontend-tg
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref vpc
+      Targets:
+        - Id: !Ref ec2onDocker
+          Port: 80
+  publicAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${projectName}-public-alb
+      Scheme: internet-facing
+      Subnets:
+        - !Ref publicSubnet1
+        - !Ref publicSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-public-alb
+      Type: application
+      SecurityGroups: [!Ref albSecuritygroup]
+  publiclistnener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref frontendTargetGroup
+          Type: forward
+      LoadBalancerArn: !Ref publicAlb
+      Port: 80
+      Protocol: HTTP
+  ec2onDocker:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      AvailabilityZone: ap-northeast-1a
+      ImageId: ami-0d7ed3ddb85b521a6
+      InstanceType: m4.large
+      KeyName: !Ref EC2KeyPair
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp2
+            VolumeSize: 8
+      SecurityGroupIds:
+        - !Ref ec2Securitygroup
+      SubnetId: !Ref publicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-ec2
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash 
+          yum update -y
+          yum install -y docker
+          systemctl enable docker
+          service docker start
+          docker pull [イメージ]
+          docker run -d --restart=always -it -p 80:80 [イメージ]
